@@ -14,7 +14,6 @@ import java.util.Map;
 
 public class SimpleDb {
 
-    private Connection connection;
     public String DB_URL = "jdbc:mysql://host:3306/database?useSSL=false&allowPublicKeyRetrieval=devMode";
     public String user;
     public String password;
