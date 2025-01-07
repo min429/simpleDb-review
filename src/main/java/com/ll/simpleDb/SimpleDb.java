@@ -6,6 +6,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -14,9 +15,17 @@ import java.util.Map;
 
 public class SimpleDb {
 
-    public String DB_URL = "jdbc:mysql://host:3306/database?useSSL=false&allowPublicKeyRetrieval=devMode";
-    public String user;
-    public String password;
+    private String DB_URL = "jdbc:mysql://host:3306/database?useSSL=false&allowPublicKeyRetrieval=true";
+    private String user;
+    private String password;
+    private boolean devMode;
+    private ThreadLocal<Connection> threadLocalConnection = ThreadLocal.withInitial(() -> {
+        try {
+            return DriverManager.getConnection(DB_URL, user, password);
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    });
 
     public SimpleDb(String host, String user, String password, String database) {
         setDB_URL(host, database);
@@ -29,88 +38,113 @@ public class SimpleDb {
         DB_URL = DB_URL.replace("database", database);
     }
 
-    public int run(String sql, Object... args) {
-        try (PreparedStatement stmt = getConnection().prepareStatement(sql)) {
-            for (int i = 0; i < args.length; i++) {
-                if (args[i] instanceof Boolean) {
-                    stmt.setBoolean(i + 1, (Boolean)args[i]);
-                } else {
-                    stmt.setString(i + 1, String.valueOf(args[i]));
-                }
-            }
+    public void setDevMode(boolean devMode) {
+        this.devMode = devMode;
+    }
 
+    public void setAutoCommit(boolean autoCommit) {
+        try {
+            getConnection().setAutoCommit(autoCommit);
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public void run(String sql, Object... args) {
+        try (PreparedStatement stmt = getConnection().prepareStatement(sql)) {
+            parameterBinding(stmt, List.of(args));
+            stmt.execute();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public long insert(String sql, List<Object> args) {
+        try (PreparedStatement stmt = getConnection().prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            parameterBinding(stmt, args);
+            stmt.executeUpdate();
+            try (ResultSet resultSet = stmt.getGeneratedKeys()) {
+                resultSet.next();
+                return resultSet.getLong(1);
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public int modify(String sql, List<Object> args) {
+        try (PreparedStatement stmt = getConnection().prepareStatement(sql)) {
+            parameterBinding(stmt, args);
             return stmt.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
     }
 
-    public Map<String, Object> selectOne(String sql) {
+    public Map<String, Object> selectOne(String sql, List<Object> args) {
         try (PreparedStatement stmt = getConnection().prepareStatement(sql)) {
-            ResultSet resultSet = stmt.executeQuery();
-
-            if (resultSet.next()) {
+            parameterBinding(stmt, args);
+            try(ResultSet resultSet = stmt.executeQuery()){
+                resultSet.next();
                 return toMap(resultSet);
-            } else {
-                return null;
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
     }
 
-    public LocalDateTime selectDatetime(String sql) {
+    public LocalDateTime selectDatetime(String sql, List<Object> args) {
         try (PreparedStatement stmt = getConnection().prepareStatement(sql)) {
-            ResultSet resultSet = stmt.executeQuery();
-
-            if (resultSet.next()) {
+            parameterBinding(stmt, args);
+            try(ResultSet resultSet = stmt.executeQuery()){
+                resultSet.next();
                 return resultSet.getObject(1, LocalDateTime.class);
-            } else {
-                return null;
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
     }
 
-    public Boolean selectBoolean(String sql) {
+    public Boolean selectBoolean(String sql, List<Object> args) {
         try (PreparedStatement stmt = getConnection().prepareStatement(sql)) {
-            ResultSet resultSet = stmt.executeQuery();
-
-            if (resultSet.next()) {
+            parameterBinding(stmt, args);
+            try(ResultSet resultSet = stmt.executeQuery()){
+                resultSet.next();
                 return resultSet.getObject(1, Boolean.class);
-            } else {
-                return null;
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
     }
 
-    public List<Map<String, Object>> select(String sql) {
+    public List<Map<String, Object>> select(String sql, List<Object> args) {
         try (PreparedStatement stmt = getConnection().prepareStatement(sql)) {
-            ResultSet resultSet = stmt.executeQuery();
-
-            return toMaps(resultSet);
+            parameterBinding(stmt, args);
+            try(ResultSet resultSet = stmt.executeQuery()){
+                return toMaps(resultSet);
+            }
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
     }
 
-    public void setDevMode(boolean devMode) {
-        DB_URL = DB_URL.replace("devMode", String.valueOf(devMode));
-    }
-
-    private ThreadLocal<Connection> threadLocalConnection = ThreadLocal.withInitial(() -> {
-        try {
-            return DriverManager.getConnection(DB_URL, user, password);
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
+    public void parameterBinding(PreparedStatement stmt, List<Object> args) throws SQLException {
+        for (int i = 0; i < args.size(); i++) {
+            stmt.setObject(i + 1, args.get(i));
         }
-    });
+    }
 
     public Connection getConnection() {
-        return threadLocalConnection.get();
+        try {
+            Connection connection = threadLocalConnection.get();
+            if (connection.isClosed()) {
+                connection = DriverManager.getConnection(DB_URL, user, password);
+                threadLocalConnection.set(connection);
+            }
+            return connection;
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     public void close() {
@@ -124,11 +158,7 @@ public class SimpleDb {
     }
 
     public void startTransaction() {
-        try {
-            getConnection().setAutoCommit(false);
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
-        }
+        setAutoCommit(false);
     }
 
     public void rollback() {

@@ -30,7 +30,7 @@ public class Article {
         return modifiedDate;
     }
 
-    public Boolean getIsBlind(){
+    public Boolean getIsBlind() {
         return isBlind;
     }
 
